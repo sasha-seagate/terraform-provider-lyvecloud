@@ -4,35 +4,36 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
-	"strings"
 )
 
-// ErrorResponse holds the parsed response from in case if account api returns error.
-type ErrorResponse struct {
-	Error string
+// Auth specifies parameters for AuthAccountAPI.
+type Auth struct {
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"client_secret"`
+	Audience     string `json:"audience"`
+	GrantType    string `json:"grant_type"`
 }
 
-// PermissionResponse holds the parsed response from CreatePermission.
-type PermissionResponse struct {
-	ID string
-}
-
-// ServiceAccountResponse holds the parsed response from CreateServiceAccount.
-type ServiceAccountResponse struct {
-	ID            string
-	Access_key    string
-	Access_Secret string
+// AuthData holds the response from the authentication request.
+type AuthData struct {
+	AccessToken string `json:"access_token"`
+	ExpiresIn   int    `json:"expires_in"`
+	TokenType   string `json:"Token_type"`
 }
 
 // Permission specifies parameters for CreatePermission.
 type Permission struct {
 	Name        string   `json:"name"`
 	Description string   `json:"description"`
-	Actions     string   `json:"actions"`
+	Actions     string   `json:"actions"` // all-operations/read/write
 	Buckets     []string `json:"buckets"`
+}
+
+// PermissionResponse holds the parsed response from CreatePermission.
+type PermissionResponse struct {
+	ID string `json:"id"`
 }
 
 // ServiceAccount specifies parameters for CreateServiceAccount.
@@ -42,155 +43,175 @@ type ServiceAccount struct {
 	Permissions []string `json:"permissions"`
 }
 
+// ServiceAccountResponse holds the parsed response from CreateServiceAccount.
+type ServiceAccountResponse struct {
+	ID           string `json:"Id"`
+	Accesskey    string `json:"accessKey"`
+	AccessSecret string `json:"access_secret"`
+}
+
+// ErrorResponse holds the parsed response in case of error.
+type ErrorResponse struct {
+	Error   string      `json:"error"`
+	Code    interface{} `json:"code,omitempty"`
+	Message string      `json:"message"`
+}
+
 // AuthAccountAPI returns access token.
-func AuthAccountAPI(clientId, clientSecret string) (*AuthData, error) {
-	var client *AuthData
-	r := fmt.Sprintf(ClientReq, clientId, clientSecret)
-	resp, err := CreateAndSendRequest(Post, TokenUrl, map[string]string{ContentType: Json}, strings.NewReader(r))
+func AuthAccountAPI(credentials *Auth) (*AuthData, error) {
+	credentials.Audience = AudienceUrl
+	credentials.GrantType = ClientCredentials
+
+	payload, err := json.Marshal(credentials)
 	if err != nil {
-		return client, err
+		return nil, err
 	}
 
-	if resp.StatusCode == ErrCodeUnauthorized {
-		return client, errors.New(UnauthorizedMessage)
+	resp, err := CreateAndSendRequest(http.MethodPost, TokenUrl, HeadersAuth(), bytes.NewBuffer(payload))
+	if err != nil {
+		return nil, err
 	}
 
 	resBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return client, err
+		return nil, err
 	}
+	defer resp.Body.Close()
 
-	if err = json.Unmarshal(resBody, &client); err != nil {
-		return client, err
-	}
-
-	if err != nil {
-		return client, err
+	var client *AuthData
+	if err = json.Unmarshal(resBody, client); err != nil {
+		return nil, err
 	}
 
 	return client, nil
 }
 
 // CreatePermission creates permission.
-func (c *AuthData) CreatePermission(name, desc, actions string, buckets []string) (*PermissionResponse, error) {
-	var pid *PermissionResponse
-	data := SetPermission(name, desc, actions, buckets)
-	buf, err := json.Marshal(data)
+func (c *AuthData) CreatePermission(permission *Permission) (*PermissionResponse, error) {
+	payload, err := json.Marshal(permission)
 	if err != nil {
-		return pid, err
+		return nil, err
 	}
 
-	resp, err := CreateAndSendRequest(Put, PermissionUrl, map[string]string{Authorization: Bearer + c.Access_token, ContentType: Json}, bytes.NewReader(buf))
+	resp, err := CreateAndSendRequest(http.MethodPut, PermissionUrl, HeadersCreate(c), bytes.NewBuffer(payload))
 	if err != nil {
-		return pid, err
+		return nil, err
 	}
 
 	resBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return pid, err
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var permissionId *PermissionResponse
+	if err = json.Unmarshal(resBody, permissionId); err != nil {
+		return nil, err
 	}
 
-	if err = json.Unmarshal(resBody, &pid); err != nil {
-		return pid, err
-	}
-
-	if err != nil {
-		return pid, err
-	}
-
-	return pid, nil
+	return permissionId, nil
 }
 
 // DeletePermission deletes permission.
-func (c *AuthData) DeletePermission(permissionId string) (*http.Response, error) {
-	return CreateAndSendRequest(Delete, PermissionUrl+SlashSeparator+permissionId, map[string]string{Authorization: Bearer + c.Access_token}, nil)
+func (c *AuthData) DeletePermission(permissionId string) (int, error) {
+	resp, err := CreateAndSendRequest(http.MethodDelete, PermissionUrl+SlashSeparator+permissionId, HeadersDelete(c), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.StatusCode, nil
 }
 
 // CreateServiceAccount creates service account.
-func (c *AuthData) CreateServiceAccount(name, desc string, permissions []string) (*ServiceAccountResponse, error) {
-	var sad *ServiceAccountResponse
-	data := SetSA(name, desc, permissions)
-	buf, err := json.Marshal(data)
+func (c *AuthData) CreateServiceAccount(serviceAccount *ServiceAccount) (*ServiceAccountResponse, error) {
+	payload, err := json.Marshal(serviceAccount)
 	if err != nil {
-		return sad, err
+		return nil, err
 	}
 
-	resp, err := CreateAndSendRequest(Put, SAUrl, map[string]string{Authorization: Bearer + c.Access_token, ContentType: Json}, bytes.NewReader(buf))
+	resp, err := CreateAndSendRequest(http.MethodPut, SAUrl, HeadersCreate(c), bytes.NewBuffer(payload))
 	if err != nil {
-		return sad, err
+		return nil, err
 	}
 
 	resBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return sad, err
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var serviceAccountData *ServiceAccountResponse
+	if err = json.Unmarshal(resBody, serviceAccountData); err != nil {
+		return nil, err
 	}
 
-	if err = json.Unmarshal(resBody, &sad); err != nil {
-		return sad, err
-	}
-
-	if err != nil {
-		return sad, err
-	}
-
-	return sad, nil
+	return serviceAccountData, nil
 }
 
-// DeleteServiceAccount deletes service account.
-func (c *AuthData) DeleteServiceAccount(permissionId string) (*http.Response, error) {
-	return CreateAndSendRequest(Delete, SAUrl+SlashSeparator+permissionId, map[string]string{Authorization: Bearer + c.Access_token}, nil)
+func (c *AuthData) DeleteServiceAccount(serviceAccountId string) (statusCode int, err error) {
+	resp, err := CreateAndSendRequest(http.MethodDelete, SAUrl+SlashSeparator+serviceAccountId, HeadersDelete(c), nil)
+	if err != nil {
+		return 0, err
+	}
+
+	return resp.StatusCode, nil
 }
 
 // CreateAndSendRequest creates http request and sends it.
-func CreateAndSendRequest(method, url string, m map[string]string, body io.Reader) (*http.Response, error) {
-
+func CreateAndSendRequest(method, url string, headers map[string][]string, body io.Reader) (*http.Response, error) {
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return nil, errors.New(ErrBadRequest)
+		return nil, err
 	}
-
-	for key, val := range m {
-		req.Header.Set(key, val)
-	}
+	req.Header = headers
 
 	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
 
-	if resp.StatusCode != 200 {
-		var errMesg *ErrorResponse
+	if resp.StatusCode != http.StatusOK {
 		resBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return nil, err
 		}
+		resp.Body.Close()
 
-		if err = json.Unmarshal(resBody, &errMesg); err != nil {
+		// parse the JSON response into a Go struct
+		var errResponse *ErrorResponse
+		if err := json.Unmarshal([]byte(resBody), errResponse); err != nil {
 			return nil, err
 		}
 
-		if err != nil {
-			return nil, err
+		// check the status code and return either the "error" field or the "message" field
+		if errResponse.Error != "" {
+			return nil, errors.New(errResponse.Error)
+		} else {
+			return nil, errors.New(errResponse.Message)
 		}
-
-		return nil, errors.New(errMesg.Error)
 	}
 
 	return resp, err
 }
 
-// SetPermission initializes a struct for the http request that creates permission.
-func SetPermission(name, desc, actions string, buckets []string) *Permission {
-	return &Permission{
-		Name:        name,
-		Description: desc,
-		Actions:     actions,
-		Buckets:     buckets,
+// HeadersCreate returns headers for creating permission/service account.
+func HeadersCreate(c *AuthData) map[string][]string {
+	return map[string][]string{
+		Authorization: {Bearer + c.AccessToken},
 	}
 }
 
-// SetSA initializes a struct for the http request that creates service account.
-func SetSA(name, desc string, permissions []string) *ServiceAccount {
-	return &ServiceAccount{
-		Name:        name,
-		Description: desc,
-		Permissions: permissions,
+// HeadersDelete returns headers for deleting permission/service account.
+func HeadersDelete(c *AuthData) map[string][]string {
+	return map[string][]string{
+		ContentType:   {Json},
+		Authorization: {Bearer + c.AccessToken},
+	}
+}
+
+// HeadersAuth returns headers for account api v2 authorization.
+func HeadersAuth() map[string][]string {
+	return map[string][]string{
+		ContentType: {Json},
 	}
 }

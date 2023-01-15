@@ -18,16 +18,14 @@ func ResourceServiceAccount() *schema.Resource {
 			"service_account": {
 				Type:     schema.TypeString,
 				Required: true,
-				ForceNew: true,
 			},
 			"description": {
 				Type:     schema.TypeString,
-				Optional: true,
+				Optional: true, // should be generated if left empty
 			},
 			"permissions": {
 				Type:     schema.TypeList,
 				Required: true,
-				ForceNew: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
 				},
@@ -48,12 +46,12 @@ func ResourceServiceAccount() *schema.Resource {
 	}
 }
 
-func resourceServiceAccountCreate(d *schema.ResourceData, m interface{}) error {
-	if CheckCredentials(Account, m.(Client)) {
+func resourceServiceAccountCreate(d *schema.ResourceData, meta interface{}) error {
+	if CheckCredentials(AccountAPIV1, meta.(Client)) {
 		return fmt.Errorf("credentials for account API(client_id, client_secret) are missing")
 	}
 
-	c := m.(Client).AccApiClient
+	conn := *meta.(Client).AccAPIV1Client
 
 	service_account := d.Get("service_account").(string)
 	description := d.Get("description").(string)
@@ -64,36 +62,42 @@ func resourceServiceAccountCreate(d *schema.ResourceData, m interface{}) error {
 		permissions = append(permissions, v.(string))
 	}
 
-	resp, err := c.CreateServiceAccount(service_account, description, permissions)
+	serviceAccountInput := ServiceAccount{
+		Name:        service_account,
+		Description: description,
+		Permissions: permissions,
+	}
+
+	resp, err := conn.CreateServiceAccount(&serviceAccountInput)
 	if err != nil {
 		return fmt.Errorf("error creating service account: %w", err)
 	}
 
 	d.SetId(resp.ID)
 
-	d.Set("access_key", resp.Access_key)
-	d.Set("access_secret", resp.Access_Secret)
-	return resourceServiceAccountRead(d, m)
+	d.Set("access_key", resp.Accesskey)
+	d.Set("access_secret", resp.AccessSecret)
+	return resourceServiceAccountRead(d, meta)
 }
 
-func resourceServiceAccountRead(d *schema.ResourceData, m interface{}) error {
+func resourceServiceAccountRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("id", d.Id())
 	return nil
 }
 
-func resourceServiceAccountUpdate(d *schema.ResourceData, m interface{}) error {
-	// currently useless
+func resourceServiceAccountUpdate(d *schema.ResourceData, meta interface{}) error {
+	// not supported in account api v1
 	return nil
 }
 
-func resourceServiceAccountDelete(d *schema.ResourceData, m interface{}) error {
-	if CheckCredentials(Account, m.(Client)) {
+func resourceServiceAccountDelete(d *schema.ResourceData, meta interface{}) error {
+	if CheckCredentials(AccountAPIV1, meta.(Client)) {
 		return fmt.Errorf("credentials for account api(client_id, client_secret) are missing")
 	}
 
-	c := m.(Client).AccApiClient
+	conn := *meta.(Client).AccAPIV1Client
 
-	_, err := c.DeleteServiceAccount(d.Id())
+	_, err := conn.DeleteServiceAccount(d.Id())
 	if err != nil {
 		return fmt.Errorf("error deleting service account: %w", err)
 	}
